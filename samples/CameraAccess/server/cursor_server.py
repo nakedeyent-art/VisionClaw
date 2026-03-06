@@ -311,10 +311,11 @@ class ScreenshotCache:
         cam_desc = cam_feats["descriptors"][0].cpu().numpy()
         cam_kps = cam_feats["keypoints"][0].cpu().numpy()
 
-        # Try ALL monitors, pick the one with most inliers
+        # Try last matched monitor first; early-exit if confidence is good
+        order = [start_idx] + [i for i in range(len(monitors)) if i != start_idx]
         best = None  # (sx, sy, inliers, confidence, idx)
 
-        for idx in range(len(monitors)):
+        for idx in order:
             mon, screen_feats, scale, feat_scale = monitors[idx]
 
             scr_desc = screen_feats["descriptors"][0].cpu().numpy()
@@ -323,7 +324,6 @@ class ScreenshotCache:
             if len(cam_desc) < 2 or len(scr_desc) < 2:
                 continue
 
-            # Mutual nearest neighbor matching
             matches = _bf_cross.match(cam_desc, scr_desc)
             matches = sorted(matches, key=lambda m: m.distance)
 
@@ -342,29 +342,35 @@ class ScreenshotCache:
             if inliers < min_matches:
                 continue
 
-            # Validate homography: reject degenerate transforms
             det = np.linalg.det(H[:2, :2])
             if det < 0.1 or det > 10.0:
                 continue
 
             confidence = inliers / n_matches if n_matches else 0.0
 
+            cam_center = np.float32([[cam_w / 2, cam_h / 2]]).reshape(-1, 1, 2)
+            screen_pt = cv2.perspectiveTransform(cam_center, H)
+            sx = float(screen_pt[0][0][0])
+            sy = float(screen_pt[0][0][1])
+
+            sx = mon["left"] + sx / feat_scale / scale
+            sy = mon["top"] + sy / feat_scale / scale
+
+            mon_w = mon["width"] / scale
+            mon_h = mon["height"] / scale
+            sx = max(mon["left"], min(mon["left"] + mon_w, sx))
+            sy = max(mon["top"], min(mon["top"] + mon_h, sy))
+
+            candidate = (sx, sy, inliers, confidence, idx)
+
+            # Early exit if good enough match on preferred monitor
+            if confidence >= 0.25:
+                with self._lock:
+                    self._last_matched_idx = idx
+                return (sx, sy, inliers, confidence)
+
             if best is None or inliers > best[2]:
-                # Map camera center through homography
-                cam_center = np.float32([[cam_w / 2, cam_h / 2]]).reshape(-1, 1, 2)
-                screen_pt = cv2.perspectiveTransform(cam_center, H)
-                sx = float(screen_pt[0][0][0])
-                sy = float(screen_pt[0][0][1])
-
-                sx = mon["left"] + sx / feat_scale / scale
-                sy = mon["top"] + sy / feat_scale / scale
-
-                mon_w = mon["width"] / scale
-                mon_h = mon["height"] / scale
-                sx = max(mon["left"], min(mon["left"] + mon_w, sx))
-                sy = max(mon["top"], min(mon["top"] + mon_h, sy))
-
-                best = (sx, sy, inliers, confidence, idx)
+                best = candidate
 
         if best:
             with self._lock:
