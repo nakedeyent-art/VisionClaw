@@ -219,9 +219,8 @@ def handle_health():
 _device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 _extractor = SuperPoint(max_num_keypoints=1024).eval().to(_device)
 
-# FLANN matcher with ratio test
-_flann = cv2.FlannBasedMatcher(dict(algorithm=1, trees=5), dict(checks=50))
-_RATIO_THRESH = 0.9
+# BFMatcher with cross-check (mutual nearest neighbor) — high precision matching
+_bf_cross = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)
 
 # Max camera frame dimension (downscale large frames before extraction)
 _MAX_CAM_DIM = 640
@@ -312,36 +311,41 @@ class ScreenshotCache:
         # Try last matched monitor first, then others
         order = [start_idx] + [i for i in range(len(monitors)) if i != start_idx]
 
-        cam_desc = cam_feats["descriptors"][0].cpu().numpy().astype(np.float32)
+        cam_desc = cam_feats["descriptors"][0].cpu().numpy()
         cam_kps = cam_feats["keypoints"][0].cpu().numpy()
 
         for idx in order:
             mon, screen_feats, scale, feat_scale = monitors[idx]
 
-            scr_desc = screen_feats["descriptors"][0].cpu().numpy().astype(np.float32)
+            scr_desc = screen_feats["descriptors"][0].cpu().numpy()
             scr_kps = screen_feats["keypoints"][0].cpu().numpy()
 
             if len(cam_desc) < 2 or len(scr_desc) < 2:
                 continue
-            raw_matches = _flann.knnMatch(cam_desc, scr_desc, k=2)
-            good = []
-            for pair in raw_matches:
-                if len(pair) == 2 and pair[0].distance < _RATIO_THRESH * pair[1].distance:
-                    good.append(pair[0])
 
-            n_matches = len(good)
+            # Mutual nearest neighbor matching (A->B best == B->A best)
+            matches = _bf_cross.match(cam_desc, scr_desc)
+            # Sort by distance, keep best matches
+            matches = sorted(matches, key=lambda m: m.distance)
+
+            n_matches = len(matches)
             if n_matches < min_matches:
                 continue
 
-            src_pts = cam_kps[[m.queryIdx for m in good]].reshape(-1, 1, 2)
-            dst_pts = scr_kps[[m.trainIdx for m in good]].reshape(-1, 1, 2)
+            src_pts = cam_kps[[m.queryIdx for m in matches]].reshape(-1, 1, 2)
+            dst_pts = scr_kps[[m.trainIdx for m in matches]].reshape(-1, 1, 2)
 
-            H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+            H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 10.0)
             if H is None:
                 continue
 
             inliers = int(mask.sum()) if mask is not None else 0
             if inliers < min_matches:
+                continue
+
+            # Validate homography: reject degenerate transforms
+            det = np.linalg.det(H[:2, :2])
+            if det < 0.1 or det > 10.0:
                 continue
 
             # Map camera center through homography -> monitor pixel coords
@@ -386,9 +390,14 @@ def handle_locate():
     t_start = time.time()
     result = screenshot_cache.locate(jpeg_data, min_matches=8)
     elapsed_ms = (time.time() - t_start) * 1000
-    if result:
-        _, _, mc, conf = result
-        print(f"[locate] {elapsed_ms:.0f}ms matches={mc} conf={conf:.2f}", flush=True)
+
+    # Filter out low-confidence results (bad homography)
+    if result and result[3] < 0.10:
+        print(f"[locate] {elapsed_ms:.0f}ms x={result[0]:.0f} y={result[1]:.0f} matches={result[2]} conf={result[3]:.2f} REJECTED", flush=True)
+        result = None
+    elif result:
+        rx, ry, mc, conf = result
+        print(f"[locate] {elapsed_ms:.0f}ms x={rx:.0f} y={ry:.0f} matches={mc} conf={conf:.2f}", flush=True)
     else:
         print(f"[locate] {elapsed_ms:.0f}ms NO MATCH", flush=True)
 

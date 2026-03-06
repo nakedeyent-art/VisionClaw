@@ -17,7 +17,7 @@ enum GazeConfig {
 
   // Frame processing
   static let gazeUpdateInterval: TimeInterval = 1.0 / 5.0  // 5 fps (match server throughput)
-  static let smoothingFactor: Double = 0.3  // Exponential moving average (lower = smoother)
+  static let smoothingFactor: Double = 0.15  // Exponential moving average (lower = smoother)
 
   // JPEG quality for /locate frames (0.0-1.0, lower = smaller payload, faster upload)
   static let locateJpegQuality: CGFloat = 0.3
