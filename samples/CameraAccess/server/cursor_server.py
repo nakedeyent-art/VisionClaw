@@ -239,6 +239,83 @@ def handle_health():
 # SuperPoint feature extractor (shared)
 # ---------------------------------------------------------------------------
 
+class GazeKalmanFilter:
+    """2D Kalman filter for cursor position with velocity model.
+
+    State: [x, y, vx, vy]
+    Measurement: [x, y]
+
+    Automatically adapts measurement noise based on match confidence.
+    High confidence = trust measurement more = faster response.
+    Low confidence = trust prediction more = smoother but laggier.
+    """
+
+    def __init__(self):
+        # State: [x, y, vx, vy]
+        self.x = np.zeros(4, dtype=np.float64)
+        # State covariance
+        self.P = np.eye(4, dtype=np.float64) * 1000.0
+        # Process noise (how much we expect position to change)
+        self.Q = np.diag([10.0, 10.0, 50.0, 50.0])
+        # Base measurement noise
+        self._base_R = 200.0
+        self.initialized = False
+        self._last_time = None
+
+    def predict(self, dt=None):
+        """Predict next state based on velocity model."""
+        if not self.initialized:
+            return
+        if dt is None:
+            now = time.time()
+            dt = now - self._last_time if self._last_time else 0.033
+            self._last_time = now
+        dt = max(0.001, min(dt, 0.5))
+
+        # State transition: x += vx*dt, y += vy*dt
+        F = np.eye(4, dtype=np.float64)
+        F[0, 2] = dt
+        F[1, 3] = dt
+
+        self.x = F @ self.x
+        self.P = F @ self.P @ F.T + self.Q * dt
+
+    def update(self, mx, my, confidence=0.5, match_count=20):
+        """Update with a new measurement. Confidence scales noise."""
+        H = np.array([[1, 0, 0, 0], [0, 1, 0, 0]], dtype=np.float64)
+        z = np.array([mx, my], dtype=np.float64)
+
+        if not self.initialized:
+            self.x[:2] = z
+            self.x[2:] = 0.0
+            self.P = np.eye(4, dtype=np.float64) * 500.0
+            self.initialized = True
+            self._last_time = time.time()
+            return
+
+        # Adaptive measurement noise: low confidence = high noise = ignore
+        # High confidence = low noise = trust measurement
+        noise_scale = max(0.3, 1.0 - confidence) * max(1.0, 50.0 / match_count)
+        R = np.eye(2, dtype=np.float64) * self._base_R * noise_scale
+
+        # Standard Kalman update
+        y_res = z - H @ self.x
+        S = H @ self.P @ H.T + R
+        K = self.P @ H.T @ np.linalg.inv(S)
+        self.x = self.x + K @ y_res
+        self.P = (np.eye(4) - K @ H) @ self.P
+
+    def position(self):
+        """Return current estimated position."""
+        return float(self.x[0]), float(self.x[1])
+
+    def apply_flow(self, dx_screen, dy_screen):
+        """Apply optical flow delta directly to state."""
+        if self.initialized:
+            self.x[0] += dx_screen
+            self.x[1] += dy_screen
+
+
 _device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 _extractor = SuperPoint(max_num_keypoints=2048).eval().to(_device)
 _bf = cv2.BFMatcher(cv2.NORM_L2)
@@ -380,6 +457,7 @@ class GazeTracker:
         self._frame_count = 0  # Frames since last anchor match
         self._anchor_interval = 5  # Do anchor matching every N frames
         self._min_accept_matches = 12  # Minimum inliers to accept an anchor result
+        self._kalman = GazeKalmanFilter()  # Smooth + predict cursor position
 
         # Screen content layer (per-monitor, retina-aware)
         self._screen_monitors = []  # List of (monitor, feats, retina_scale, feat_scale)
@@ -428,6 +506,7 @@ class GazeTracker:
             self._cal_points = cal_points
             self._prev_gray = None
             self._current_pos = None
+            self._kalman = GazeKalmanFilter()
 
         # Show first dot
         sx, sy = cal_points[0]
@@ -512,11 +591,13 @@ class GazeTracker:
     # -- Runtime tracking --
 
     def locate(self, jpeg_bytes):
-        """Locate gaze position using environment anchors + optical flow.
+        """Locate gaze position using Kalman-filtered hybrid tracking.
 
-        Strategy: optical flow every frame (~5ms), anchor matching every
-        N frames (~160ms) for absolute correction. This keeps latency low
-        while preventing drift.
+        Architecture:
+        - Optical flow every frame: fast delta applied to Kalman state
+        - Anchor + screen matching every Nth frame: Kalman measurement update
+        - Kalman filter: smooths noise, tracks velocity, adapts to confidence
+        - Server moves cursor directly (no /move round-trip)
 
         Returns (screen_x, screen_y, match_count, confidence) or None.
         """
@@ -530,50 +611,44 @@ class GazeTracker:
         t0 = time.time()
         self._frame_count += 1
 
+        # Kalman predict step (advance state by dt)
+        self._kalman.predict()
+
         # -- Optical flow: fast path every frame --
-        flow_dx, flow_dy = 0.0, 0.0
-        if self._prev_gray is not None and self._current_pos is not None:
+        if self._prev_gray is not None and self._kalman.initialized:
             flow_dx, flow_dy = self._compute_optical_flow(self._prev_gray, gray)
+            if flow_dx != 0 or flow_dy != 0:
+                # Apply flow directly to Kalman state
+                self._kalman.apply_flow(
+                    -flow_dx * self._scale_factor,
+                    -flow_dy * self._scale_factor,
+                )
 
-        # Apply flow immediately if we have a position
-        flow_applied = False
-        if self._current_pos is not None and (flow_dx != 0 or flow_dy != 0):
-            ox, oy = self._current_pos
-            nx = ox - flow_dx * self._scale_factor
-            ny = oy - flow_dy * self._scale_factor
-            scr_ox, scr_oy, scr_w, scr_h = get_screen_size()
-            nx = max(scr_ox, min(scr_ox + scr_w, nx))
-            ny = max(scr_oy, min(scr_oy + scr_h, ny))
-            self._current_pos = (nx, ny)
-            flow_applied = True
-
-        # -- Hybrid matching: periodic absolute correction --
+        # -- Anchor/screen matching: periodic absolute correction --
         need_anchor = (
-            self._current_pos is None  # No position yet
-            or self._frame_count >= self._anchor_interval  # Time for correction
-            or time.time() - self._last_anchor_time > 2.0  # Stale position
+            not self._kalman.initialized
+            or self._frame_count >= self._anchor_interval
+            or time.time() - self._last_anchor_time > 2.0
         )
+
+        source = None
+        mc, conf = 0, 0.0
 
         if need_anchor:
             self._frame_count = 0
-            # Extract features once, reuse for both matchers
             cam_feats = extract_features(gray)
 
             anchor_result = self._match_anchors(gray, cam_w, cam_h, cam_feats=cam_feats)
             screen_result = self._match_screen_content(cam_feats, cam_w, cam_h)
 
-            # Prefer screen content when confident (direct pixel coords).
-            # Only use env anchors as fallback or for minor correction.
+            # Prefer screen content when confident (direct pixel coords)
             best = None
-            source = None
             if screen_result:
                 s_x, s_y, s_mc, s_conf = screen_result
                 if s_mc >= 15:
-                    # Screen content is confident — use exclusively
                     best = screen_result
                     source = f"SCREEN scr={s_mc}"
                 elif anchor_result:
-                    # Weak screen + env anchor: blend with screen dominant
                     a_x, a_y, a_mc, a_conf = anchor_result
                     w_a = a_mc
                     w_s = s_mc * 3.0
@@ -598,46 +673,44 @@ class GazeTracker:
                 sx, sy, mc, conf = best
 
                 # Outlier rejection: too few inliers → skip
-                if mc < self._min_accept_matches and self._current_pos is not None:
+                if mc < self._min_accept_matches and self._kalman.initialized:
                     self._prev_gray = gray
                     elapsed_ms = (time.time() - t0) * 1000
                     print(f"[locate] {elapsed_ms:.0f}ms {source} REJECTED "
                           f"(matches={mc} < {self._min_accept_matches})", flush=True)
+                    # Still return Kalman position
+                    kx, ky = self._kalman.position()
+                    return (kx, ky, 0, 0.01)
                 else:
-                    # No server-side smoothing — iOS handles all smoothing
-                    # via 60fps lerp. Server returns raw positions for
-                    # minimum latency.
-                    self._current_pos = (sx, sy)
+                    # Kalman measurement update
+                    self._kalman.update(sx, sy, confidence=conf, match_count=mc)
                     self._last_anchor_time = time.time()
-                    self._prev_gray = gray
-
-                    # Move cursor directly from server (skip /move round-trip)
-                    move_mouse(sx, sy)
-
-                    elapsed_ms = (time.time() - t0) * 1000
-                    print(f"[locate] {elapsed_ms:.0f}ms {source} x={sx:.0f} y={sy:.0f} "
-                          f"matches={mc} conf={conf:.2f}", flush=True)
-                    return (sx, sy, mc, conf)
 
         self._prev_gray = gray
+
+        # Get smoothed position from Kalman filter
+        if not self._kalman.initialized:
+            elapsed_ms = (time.time() - t0) * 1000
+            print(f"[locate] {elapsed_ms:.0f}ms NO MATCH", flush=True)
+            return None
+
+        kx, ky = self._kalman.position()
+
+        # Clamp to screen bounds
+        scr_ox, scr_oy, scr_w, scr_h = get_screen_size()
+        kx = max(scr_ox, min(scr_ox + scr_w, kx))
+        ky = max(scr_oy, min(scr_oy + scr_h, ky))
+        self._current_pos = (kx, ky)
+
+        # Move cursor directly from server
+        move_mouse(kx, ky)
+
         elapsed_ms = (time.time() - t0) * 1000
+        if source:
+            print(f"[locate] {elapsed_ms:.0f}ms {source} x={kx:.0f} y={ky:.0f} "
+                  f"matches={mc} conf={conf:.2f}", flush=True)
 
-        # Return flow-updated position
-        if self._current_pos is not None:
-            nx, ny = self._current_pos
-            if flow_applied:
-                move_mouse(nx, ny)  # Direct cursor move, skip /move round-trip
-                age = time.time() - self._last_anchor_time
-                if elapsed_ms > 20:  # Only log slow frames
-                    print(f"[locate] {elapsed_ms:.0f}ms FLOW x={nx:.0f} y={ny:.0f} "
-                          f"age={age:.1f}s", flush=True)
-                return (nx, ny, 0, 0.01)
-            else:
-                # No flow movement, return current position
-                return (nx, ny, 0, 0.01)
-
-        print(f"[locate] {elapsed_ms:.0f}ms NO MATCH", flush=True)
-        return None
+        return (kx, ky, mc, conf)
 
     def _match_anchors(self, cam_gray, cam_w, cam_h, cam_feats=None, min_matches=5):
         """Match camera frame against calibration anchors.

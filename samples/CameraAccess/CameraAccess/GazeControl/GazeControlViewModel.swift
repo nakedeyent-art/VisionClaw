@@ -250,7 +250,9 @@ class GazeControlViewModel: ObservableObject {
     interpolationTimer = nil
   }
 
-  /// 60fps lerp: smoothly move cursor toward target
+  /// 60fps lerp: smoothly update UI display point.
+  /// Server moves the actual cursor directly via Kalman filter.
+  /// iOS only lerps for smooth UI indicator, no /move commands.
   private func interpolate() {
     guard let target = targetPoint, let current = smoothedPoint else { return }
 
@@ -260,7 +262,6 @@ class GazeControlViewModel: ObservableObject {
 
     guard dist > 0.5 else { return }  // Close enough, skip
 
-    // Lerp factor per frame: 30% per frame at 60fps — responsive but smooth
     let lerp: CGFloat = 0.3
     let next = CGPoint(
       x: current.x + dx * lerp,
@@ -270,10 +271,9 @@ class GazeControlViewModel: ObservableObject {
     smoothedPoint = next
     gazeScreenPoint = next
 
+    // Server moves cursor directly — only send /move for drag mode
     if isDragging {
       cursorBridge.mouseDragTo(next)
-    } else {
-      cursorBridge.moveCursor(to: next)
     }
   }
 
