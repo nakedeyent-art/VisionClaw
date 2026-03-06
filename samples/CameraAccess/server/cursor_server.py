@@ -217,8 +217,11 @@ def handle_health():
 # ---------------------------------------------------------------------------
 
 _device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-_extractor = SuperPoint(max_num_keypoints=1024).eval().to(_device)
-_matcher = LightGlue(features="superpoint").eval().to(_device)
+_extractor = SuperPoint(max_num_keypoints=512).eval().to(_device)
+_matcher = LightGlue(features="superpoint", depth=6, width=128).eval().to(_device)
+
+# Max camera frame dimension (downscale large frames before extraction)
+_MAX_CAM_DIM = 640
 
 
 class ScreenshotCache:
@@ -233,7 +236,7 @@ class ScreenshotCache:
     def __init__(self, refresh_interval=1.0):
         self.refresh_interval = refresh_interval
         self._lock = threading.Lock()
-        # List of (monitor_dict, features_dict, scale_factor) per monitor
+        # List of (monitor_dict, features_dict, retina_scale, feat_scale) per monitor
         self._monitors = []
         self._last_refresh = 0
         self._last_matched_idx = 0  # Prioritize last matched monitor
@@ -254,10 +257,17 @@ class ScreenshotCache:
                 screenshot = sct.grab(mon)
                 img = np.array(screenshot)[:, :, :3]
                 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                # Downscale screenshot for faster extraction (keep ratio for coord mapping)
+                sh, sw = gray.shape[:2]
+                max_dim = max(sh, sw)
+                feat_scale = 1.0
+                if max_dim > 1280:
+                    feat_scale = 1280 / max_dim
+                    gray = cv2.resize(gray, (int(sw * feat_scale), int(sh * feat_scale)))
                 tensor = numpy_image_to_torch(gray).to(_device)
                 with torch.no_grad():
                     feats = _extractor.extract(tensor)
-                monitors.append((mon, feats, scale))
+                monitors.append((mon, feats, scale, feat_scale))
 
         with self._lock:
             self._monitors = monitors
@@ -277,13 +287,20 @@ class ScreenshotCache:
             monitors = list(self._monitors)
             start_idx = self._last_matched_idx
 
-        # Decode camera JPEG
+        # Decode camera JPEG and downscale if needed
         nparr = np.frombuffer(camera_jpeg_bytes, np.uint8)
         cam_img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
         if cam_img is None:
             return None
 
         cam_h, cam_w = cam_img.shape[:2]
+        max_dim = max(cam_h, cam_w)
+        if max_dim > _MAX_CAM_DIM:
+            s = _MAX_CAM_DIM / max_dim
+            cam_img = cv2.resize(cam_img, (int(cam_w * s), int(cam_h * s)))
+            cam_h, cam_w = cam_img.shape[:2]
+
+        t0 = time.time()
         cam_tensor = numpy_image_to_torch(cam_img).to(_device)
 
         with torch.no_grad():
@@ -293,7 +310,7 @@ class ScreenshotCache:
         order = [start_idx] + [i for i in range(len(monitors)) if i != start_idx]
 
         for idx in order:
-            mon, screen_feats, scale = monitors[idx]
+            mon, screen_feats, scale, feat_scale = monitors[idx]
 
             with torch.no_grad():
                 result = _matcher({"image0": screen_feats, "image1": cam_feats})
@@ -327,9 +344,9 @@ class ScreenshotCache:
             sy = float(screen_pt[0][0][1])
 
             # Convert to global CGEvent coordinates
-            # screen_pt is in the monitor's pixel space; add monitor origin
-            sx = mon["left"] + sx / scale
-            sy = mon["top"] + sy / scale
+            # screen_pt is in downscaled pixel space; undo feat_scale then retina scale
+            sx = mon["left"] + sx / feat_scale / scale
+            sy = mon["top"] + sy / feat_scale / scale
 
             # Clamp to this monitor's bounds
             mon_w = mon["width"] / scale
@@ -346,7 +363,7 @@ class ScreenshotCache:
         return None
 
 
-screenshot_cache = ScreenshotCache(refresh_interval=1.0)
+screenshot_cache = ScreenshotCache(refresh_interval=2.0)
 
 
 @app.route("/locate", methods=["POST"])
@@ -359,7 +376,10 @@ def handle_locate():
     if not jpeg_data or len(jpeg_data) < 100:
         return jsonify({"error": "Empty or invalid JPEG"}), 400
 
+    t_start = time.time()
     result = screenshot_cache.locate(jpeg_data, min_matches=15)
+    elapsed_ms = (time.time() - t_start) * 1000
+    print(f"[locate] {elapsed_ms:.0f}ms", flush=True)
 
     if result is None:
         return jsonify({
