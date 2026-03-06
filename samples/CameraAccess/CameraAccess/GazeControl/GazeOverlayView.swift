@@ -81,8 +81,8 @@ struct GazeOverlayView: View {
         Spacer()
 
         VStack(spacing: 6) {
-          if gazeVM.mode == .noMatch {
-            Text(gazeVM.isCalibrated ? "No anchor match" : "Not calibrated - tap Calibrate")
+          if gazeVM.mode == .noMatch && gazeVM.isCalibrated {
+            Text("No anchor match")
               .font(.system(size: 14, weight: .medium))
               .foregroundColor(.white)
               .padding(.horizontal, 16)
