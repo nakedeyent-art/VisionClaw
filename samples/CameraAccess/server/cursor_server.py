@@ -405,9 +405,9 @@ class PinchDetector:
     Short pinch naturally becomes a click. Long pinch = press-and-hold.
     """
 
-    PINCH_CLOSE = 0.06    # Normalized distance to trigger pinch
-    PINCH_OPEN = 0.09     # Distance to release (hysteresis)
-    DEBOUNCE_FRAMES = 1   # Immediate response (1 = no debounce)
+    PINCH_CLOSE = 0.035   # Normalized distance to trigger pinch (tighter)
+    PINCH_OPEN = 0.06     # Distance to release (hysteresis)
+    DEBOUNCE_FRAMES = 2   # Require 2 consecutive frames to confirm
 
     def __init__(self):
         self.state = PinchState.OPEN
