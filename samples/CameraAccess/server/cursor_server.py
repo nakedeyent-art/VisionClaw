@@ -308,13 +308,13 @@ class ScreenshotCache:
         with torch.no_grad():
             cam_feats = _extractor.extract(cam_tensor)
 
-        # Try last matched monitor first, then others
-        order = [start_idx] + [i for i in range(len(monitors)) if i != start_idx]
-
         cam_desc = cam_feats["descriptors"][0].cpu().numpy()
         cam_kps = cam_feats["keypoints"][0].cpu().numpy()
 
-        for idx in order:
+        # Try ALL monitors, pick the one with most inliers
+        best = None  # (sx, sy, inliers, confidence, idx)
+
+        for idx in range(len(monitors)):
             mon, screen_feats, scale, feat_scale = monitors[idx]
 
             scr_desc = screen_feats["descriptors"][0].cpu().numpy()
@@ -323,9 +323,8 @@ class ScreenshotCache:
             if len(cam_desc) < 2 or len(scr_desc) < 2:
                 continue
 
-            # Mutual nearest neighbor matching (A->B best == B->A best)
+            # Mutual nearest neighbor matching
             matches = _bf_cross.match(cam_desc, scr_desc)
-            # Sort by distance, keep best matches
             matches = sorted(matches, key=lambda m: m.distance)
 
             n_matches = len(matches)
@@ -348,28 +347,29 @@ class ScreenshotCache:
             if det < 0.1 or det > 10.0:
                 continue
 
-            # Map camera center through homography -> monitor pixel coords
-            cam_center = np.float32([[cam_w / 2, cam_h / 2]]).reshape(-1, 1, 2)
-            screen_pt = cv2.perspectiveTransform(cam_center, H)
-            sx = float(screen_pt[0][0][0])
-            sy = float(screen_pt[0][0][1])
-
-            # Convert to global CGEvent coordinates
-            # screen_pt is in downscaled pixel space; undo feat_scale then retina scale
-            sx = mon["left"] + sx / feat_scale / scale
-            sy = mon["top"] + sy / feat_scale / scale
-
-            # Clamp to this monitor's bounds
-            mon_w = mon["width"] / scale
-            mon_h = mon["height"] / scale
-            sx = max(mon["left"], min(mon["left"] + mon_w, sx))
-            sy = max(mon["top"], min(mon["top"] + mon_h, sy))
-
-            with self._lock:
-                self._last_matched_idx = idx
-
             confidence = inliers / n_matches if n_matches else 0.0
-            return (sx, sy, inliers, confidence)
+
+            if best is None or inliers > best[2]:
+                # Map camera center through homography
+                cam_center = np.float32([[cam_w / 2, cam_h / 2]]).reshape(-1, 1, 2)
+                screen_pt = cv2.perspectiveTransform(cam_center, H)
+                sx = float(screen_pt[0][0][0])
+                sy = float(screen_pt[0][0][1])
+
+                sx = mon["left"] + sx / feat_scale / scale
+                sy = mon["top"] + sy / feat_scale / scale
+
+                mon_w = mon["width"] / scale
+                mon_h = mon["height"] / scale
+                sx = max(mon["left"], min(mon["left"] + mon_w, sx))
+                sy = max(mon["top"], min(mon["top"] + mon_h, sy))
+
+                best = (sx, sy, inliers, confidence, idx)
+
+        if best:
+            with self._lock:
+                self._last_matched_idx = best[4]
+            return (best[0], best[1], best[2], best[3])
 
         return None
 
@@ -392,7 +392,7 @@ def handle_locate():
     elapsed_ms = (time.time() - t_start) * 1000
 
     # Filter out low-confidence results (bad homography)
-    if result and result[3] < 0.10:
+    if result and result[3] < 0.15:
         print(f"[locate] {elapsed_ms:.0f}ms x={result[0]:.0f} y={result[1]:.0f} matches={result[2]} conf={result[3]:.2f} REJECTED", flush=True)
         result = None
     elif result:
