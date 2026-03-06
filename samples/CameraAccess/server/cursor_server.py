@@ -348,7 +348,7 @@ class ScreenshotCache:
             src_pts = cam_kps[[m.queryIdx for m in matches]].reshape(-1, 1, 2)
             dst_pts = scr_kps[[m.trainIdx for m in matches]].reshape(-1, 1, 2)
 
-            H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 10.0)
+            H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
             if H is None:
                 continue
 
@@ -362,10 +362,12 @@ class ScreenshotCache:
 
             confidence = inliers / n_matches if n_matches else 0.0
 
-            cam_center = np.float32([[cam_w / 2, cam_h / 2]]).reshape(-1, 1, 2)
-            screen_pt = cv2.perspectiveTransform(cam_center, H)
-            sx = float(screen_pt[0][0][0])
-            sy = float(screen_pt[0][0][1])
+            # Use median of inlier screen points — more robust than
+            # projecting camera center, especially at distance
+            inlier_mask = mask.ravel().astype(bool)
+            inlier_dst = dst_pts[inlier_mask].reshape(-1, 2)
+            sx = float(np.median(inlier_dst[:, 0]))
+            sy = float(np.median(inlier_dst[:, 1]))
 
             sx = mon["left"] + sx / feat_scale / scale
             sy = mon["top"] + sy / feat_scale / scale
