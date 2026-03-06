@@ -6,6 +6,7 @@ enum GazeMode: String {
   case tracking
   case noMatch
   case dragging
+  case calibrating
 }
 
 @MainActor
@@ -17,8 +18,12 @@ class GazeControlViewModel: ObservableObject {
   @Published var errorMessage: String?
   @Published var matchCount: Int = 0
   @Published var confidence: Double = 0.0
+  @Published var isCalibrated: Bool = false
+  @Published var calibrationPointIndex: Int = 0
+  @Published var calibrationTotalPoints: Int = 9
 
   let cursorBridge = CursorControlBridge()
+  private var calibrationFrameData: Data?
 
   private var lastSendTime: Date = .distantPast
   private var smoothedPoint: CGPoint?
@@ -46,9 +51,20 @@ class GazeControlViewModel: ObservableObject {
       return
     }
 
-    mode = .tracking
-    startInterpolation()
-    NSLog("[GazeControl] Session started (server-side matching)")
+    // Check if already calibrated
+    if let status = await cursorBridge.fetchCalibrationStatus() {
+      isCalibrated = status.calibrated
+    }
+
+    if isCalibrated {
+      mode = .tracking
+      startInterpolation()
+      NSLog("[GazeControl] Session started (calibrated, %d anchors)", isCalibrated ? 1 : 0)
+    } else {
+      mode = .tracking
+      startInterpolation()
+      NSLog("[GazeControl] Session started (not calibrated - run calibration for best results)")
+    }
   }
 
   func stopSession() {
@@ -73,6 +89,11 @@ class GazeControlViewModel: ObservableObject {
   // MARK: - Frame Processing
 
   func processFrame(_ image: UIImage) {
+    // During calibration, just store the latest frame but don't locate
+    if mode == .calibrating {
+      calibrationFrameData = image.jpegData(compressionQuality: 0.5)
+      return
+    }
     guard isActive, inFlightCount < 2 else { return }
 
     let now = Date()
@@ -112,6 +133,72 @@ class GazeControlViewModel: ObservableObject {
           }
         }
       }
+    }
+  }
+
+  // MARK: - Calibration
+
+  func startCalibration() async {
+    guard isActive else { return }
+
+    stopInterpolation()
+    mode = .calibrating
+    gazeScreenPoint = nil
+    smoothedPoint = nil
+
+    guard let point = await cursorBridge.startCalibration() else {
+      errorMessage = "Failed to start calibration"
+      mode = .tracking
+      startInterpolation()
+      return
+    }
+
+    calibrationPointIndex = point.pointIndex
+    calibrationTotalPoints = point.totalPoints
+    NSLog("[GazeControl] Calibration started: point %d/%d at (%.0f, %.0f)",
+          point.pointIndex, point.totalPoints, point.screenX, point.screenY)
+  }
+
+  /// Capture the latest camera frame as a calibration anchor.
+  func captureCalibrationPoint() async {
+    guard mode == .calibrating else { return }
+
+    guard let jpegData = calibrationFrameData else {
+      NSLog("[GazeControl] No calibration frame available")
+      return
+    }
+
+    guard let result = await cursorBridge.captureCalibrationFrame(imageData: jpegData) else {
+      NSLog("[GazeControl] Failed to capture calibration point")
+      return
+    }
+
+    if result.status == "all_captured" {
+      // All points captured, finish calibration
+      let ok = await cursorBridge.finishCalibration()
+      if ok {
+        isCalibrated = true
+        mode = .tracking
+        startInterpolation()
+        NSLog("[GazeControl] Calibration complete")
+      } else {
+        errorMessage = "Failed to finish calibration"
+        mode = .tracking
+        startInterpolation()
+      }
+    } else {
+      calibrationPointIndex = result.pointIndex
+      NSLog("[GazeControl] Calibration point captured, next: %d/%d",
+            result.pointIndex, result.totalPoints)
+    }
+  }
+
+  func cancelCalibration() async {
+    if mode == .calibrating {
+      _ = await cursorBridge.finishCalibration()
+      mode = .tracking
+      startInterpolation()
+      NSLog("[GazeControl] Calibration cancelled")
     }
   }
 

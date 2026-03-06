@@ -37,12 +37,19 @@ struct GazeStatusBar: View {
     case .tracking, .dragging: return .green
     case .noMatch: return .red
     case .connecting: return .gray
+    case .calibrating: return .blue
     }
   }
 
   private var matchText: String {
+    if gazeVM.mode == .calibrating {
+      return "Cal \(gazeVM.calibrationPointIndex + 1)/\(gazeVM.calibrationTotalPoints)"
+    }
     if gazeVM.matchCount > 0 {
       return "\(gazeVM.matchCount)pt"
+    }
+    if !gazeVM.isCalibrated {
+      return "Not Calibrated"
     }
     return "No Match"
   }
@@ -57,8 +64,21 @@ struct GazeOverlayView: View {
       Spacer()
 
       VStack(spacing: 6) {
-        if gazeVM.mode == .noMatch {
-          Text("No features detected on screen")
+        if gazeVM.mode == .calibrating {
+          VStack(spacing: 8) {
+            Text("Calibrating: Look at the red dot on screen")
+              .font(.system(size: 14, weight: .medium))
+              .foregroundColor(.white)
+            Text("Point \(gazeVM.calibrationPointIndex + 1) of \(gazeVM.calibrationTotalPoints)")
+              .font(.system(size: 12, design: .monospaced))
+              .foregroundColor(.white.opacity(0.7))
+          }
+          .padding(.horizontal, 16)
+          .padding(.vertical, 12)
+          .background(Color.black.opacity(0.7))
+          .cornerRadius(12)
+        } else if gazeVM.mode == .noMatch {
+          Text(gazeVM.isCalibrated ? "No anchor match" : "Not calibrated - tap Calibrate")
             .font(.system(size: 14, weight: .medium))
             .foregroundColor(.white)
             .padding(.horizontal, 16)
@@ -87,17 +107,30 @@ struct GazeControlButtons: View {
   @ObservedObject var gazeVM: GazeControlViewModel
 
   var body: some View {
-    if gazeVM.isActive && (gazeVM.mode == .tracking || gazeVM.mode == .dragging) {
+    if gazeVM.isActive {
       HStack(spacing: 8) {
-        CircleButton(icon: "hand.tap.fill", text: "Tap") {
-          gazeVM.triggerClick()
-        }
+        if gazeVM.mode == .calibrating {
+          CircleButton(icon: "camera.fill", text: "Capture") {
+            Task { await gazeVM.captureCalibrationPoint() }
+          }
+          CircleButton(icon: "xmark", text: "Cancel") {
+            Task { await gazeVM.cancelCalibration() }
+          }
+        } else if gazeVM.mode == .tracking || gazeVM.mode == .dragging {
+          CircleButton(icon: "scope", text: "Calibrate") {
+            Task { await gazeVM.startCalibration() }
+          }
 
-        CircleButton(
-          icon: gazeVM.isDragging ? "hand.raised.fill" : "hand.draw.fill",
-          text: gazeVM.isDragging ? "Drop" : "Grab"
-        ) {
-          gazeVM.toggleDrag()
+          CircleButton(icon: "hand.tap.fill", text: "Tap") {
+            gazeVM.triggerClick()
+          }
+
+          CircleButton(
+            icon: gazeVM.isDragging ? "hand.raised.fill" : "hand.draw.fill",
+            text: gazeVM.isDragging ? "Drop" : "Grab"
+          ) {
+            gazeVM.toggleDrag()
+          }
         }
       }
     }

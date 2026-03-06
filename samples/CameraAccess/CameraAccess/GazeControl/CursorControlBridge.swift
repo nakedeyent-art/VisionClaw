@@ -93,7 +93,102 @@ class CursorControlBridge: ObservableObject {
     sendCommand("mouse_up", body: ["x": point.x, "y": point.y])
   }
 
-  // MARK: - Locate (server-side ORB matching)
+  // MARK: - Calibration
+
+  struct CalibrationStatus {
+    let calibrated: Bool
+    let anchors: Int
+    let calibrating: Bool
+    let calIndex: Int
+  }
+
+  struct CalibrationPoint {
+    let pointIndex: Int
+    let totalPoints: Int
+    let screenX: Double
+    let screenY: Double
+    let status: String?  // "captured", "all_captured", or nil (start)
+  }
+
+  func fetchCalibrationStatus() async -> CalibrationStatus? {
+    guard let url = URL(string: "\(GazeConfig.cursorServerBaseURL)/calibrate/status") else { return nil }
+    do {
+      let (data, response) = try await session.data(for: URLRequest(url: url))
+      guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
+      guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+      return CalibrationStatus(
+        calibrated: json["calibrated"] as? Bool ?? false,
+        anchors: json["anchors"] as? Int ?? 0,
+        calibrating: json["calibrating"] as? Bool ?? false,
+        calIndex: json["cal_index"] as? Int ?? 0
+      )
+    } catch {
+      return nil
+    }
+  }
+
+  func startCalibration() async -> CalibrationPoint? {
+    guard let url = URL(string: "\(GazeConfig.cursorServerBaseURL)/calibrate/start") else { return nil }
+    var req = URLRequest(url: url)
+    req.httpMethod = "POST"
+    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    do {
+      let (data, response) = try await session.data(for: req)
+      guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
+      guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+      return CalibrationPoint(
+        pointIndex: json["point_index"] as? Int ?? 0,
+        totalPoints: json["total_points"] as? Int ?? 9,
+        screenX: json["screen_x"] as? Double ?? 0,
+        screenY: json["screen_y"] as? Double ?? 0,
+        status: nil
+      )
+    } catch {
+      return nil
+    }
+  }
+
+  func captureCalibrationFrame(imageData: Data) async -> CalibrationPoint? {
+    guard let url = URL(string: "\(GazeConfig.cursorServerBaseURL)/calibrate/capture") else { return nil }
+    var req = URLRequest(url: url)
+    req.httpMethod = "POST"
+    req.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
+    req.httpBody = imageData
+    do {
+      let (data, response) = try await session.data(for: req)
+      guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
+      guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+      let status = json["status"] as? String
+      return CalibrationPoint(
+        pointIndex: json["point_index"] as? Int ?? 0,
+        totalPoints: json["total_points"] as? Int ?? 9,
+        screenX: json["screen_x"] as? Double ?? 0,
+        screenY: json["screen_y"] as? Double ?? 0,
+        status: status
+      )
+    } catch {
+      return nil
+    }
+  }
+
+  func finishCalibration() async -> Bool {
+    guard let url = URL(string: "\(GazeConfig.cursorServerBaseURL)/calibrate/finish") else { return false }
+    var req = URLRequest(url: url)
+    req.httpMethod = "POST"
+    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    do {
+      let (data, response) = try await session.data(for: req)
+      guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return false }
+      guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let status = json["status"] as? String, status == "ok"
+      else { return false }
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  // MARK: - Locate (server-side matching)
 
   struct LocateResult {
     let status: String      // "ok" or "no_match"
