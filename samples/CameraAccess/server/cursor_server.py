@@ -44,6 +44,10 @@ ssl._create_default_https_context = ssl._create_unverified_context
 
 import cv2
 import mediapipe as mp
+from mediapipe.tasks.python import BaseOptions as MPBaseOptions
+from mediapipe.tasks.python.vision import (
+    HandLandmarker, HandLandmarkerOptions, RunningMode as MPRunningMode,
+)
 import mss
 import numpy as np
 import Quartz
@@ -1207,12 +1211,19 @@ class GazeTracker:
 
     def _hand_detection_loop(self):
         """Background: detect hands and process pinch gestures."""
-        mp_hands = mp.solutions.hands.Hands(
-            static_image_mode=False,
-            max_num_hands=1,
-            min_detection_confidence=0.5,
+        model_path = os.path.join(os.path.dirname(__file__), "hand_landmarker.task")
+        if not os.path.exists(model_path):
+            print("[Hand] hand_landmarker.task not found - hand detection disabled", flush=True)
+            return
+
+        options = HandLandmarkerOptions(
+            base_options=MPBaseOptions(model_asset_path=model_path),
+            running_mode=MPRunningMode.IMAGE,
+            num_hands=1,
+            min_hand_detection_confidence=0.5,
             min_tracking_confidence=0.5,
         )
+        landmarker = HandLandmarker.create_from_options(options)
         no_hand_count = 0
 
         while self._hand_thread_active:
@@ -1231,14 +1242,16 @@ class GazeTracker:
             if frame is None:
                 continue
 
-            results = mp_hands.process(frame)
+            # Convert numpy RGB to MediaPipe Image
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
+            results = landmarker.detect(mp_image)
 
-            if results.multi_hand_landmarks:
+            if results.hand_landmarks:
                 no_hand_count = 0
                 self._pinch.hand_detected = True
-                hand = results.multi_hand_landmarks[0]
-                thumb_tip = hand.landmark[4]
-                index_tip = hand.landmark[8]
+                hand = results.hand_landmarks[0]
+                thumb_tip = hand[4]   # Landmark 4: thumb tip
+                index_tip = hand[8]   # Landmark 8: index finger tip
 
                 action = self._pinch.update(
                     (thumb_tip.x, thumb_tip.y),
@@ -1255,7 +1268,7 @@ class GazeTracker:
                     if action is not None:
                         self._execute_pinch_action(action)
 
-        mp_hands.close()
+        landmarker.close()
 
     def _execute_pinch_action(self, action):
         """Execute a pinch action at the current Kalman cursor position."""
