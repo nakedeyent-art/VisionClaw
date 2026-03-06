@@ -1271,9 +1271,8 @@ class GazeTracker:
                              or abs(self._pinch.hand_dy) > 0.005)):
                     scr_ox, scr_oy, scr_w, scr_h = get_screen_size()
                     # Convert normalized hand delta to screen pixels
-                    # Hand movement is inverted (hand moves right = view moves left)
-                    hdx = -self._pinch.hand_dx * scr_w * 1.5
-                    hdy = -self._pinch.hand_dy * scr_h * 1.5
+                    hdx = self._pinch.hand_dx * scr_w * 1.5
+                    hdy = self._pinch.hand_dy * scr_h * 1.5
                     if self._kalman.initialized:
                         self._kalman.apply_flow(hdx, hdy)
 
