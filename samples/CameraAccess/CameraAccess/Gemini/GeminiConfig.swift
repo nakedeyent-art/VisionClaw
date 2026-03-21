@@ -28,8 +28,10 @@ enum GeminiConfig {
     - Research, analyze, or draft anything
     - Control or interact with apps, devices, or services
     - Remember or store any information for later
+    - Create a voice note, read something aloud, or generate audio (uses ElevenLabs with your cloned voice)
+    - Look up real-time information on the web (uses Brave Search)
 
-    Be detailed in your task description. Include all relevant context: names, content, platforms, quantities, etc. The assistant works better with complete information.
+    CRITICAL RULE FOR TOOL CALLS: When calling execute, you MUST relay the user's request using their EXACT words as closely as possible. Do NOT paraphrase, summarize, or reinterpret what they said. Pass their actual spoken request verbatim as the task. The downstream assistant needs the user's original phrasing to understand intent correctly. If the user says "text my mom I'm running late", the task should be "text my mom I'm running late" -- not a rewritten version.
 
     NEVER pretend to do these things yourself.
 

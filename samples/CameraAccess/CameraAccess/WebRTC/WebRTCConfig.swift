@@ -2,7 +2,7 @@ import Foundation
 import WebRTC
 
 enum WebRTCConfig {
-  static let signalingServerURL = Secrets.webrtcSignalingURL
+  static var signalingServerURL: String { SettingsManager.shared.webrtcSignalingURL }
 
   static let stunServers = [
     "stun:stun.l.google.com:19302",
