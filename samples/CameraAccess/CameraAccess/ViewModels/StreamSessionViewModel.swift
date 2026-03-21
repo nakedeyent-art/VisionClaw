@@ -216,6 +216,20 @@ class StreamSessionViewModel: ObservableObject {
           if case .deviceNotConnected = error { return }
           if case .deviceNotFound = error { return }
         }
+        
+        // AUTO-RECOVERY: Meta glasses firmware often drops the stream after ~10 seconds.
+        // Instead of showing the user an error, silently attempt to restart the stream.
+        if case .internalError = error, self.streamingStatus == .streaming {
+            NSLog("[Stream] ⚠️ DAT SDK Internal Error detected. Attempting SILENT AUTO-RECOVERY...")
+            Task {
+                await self.streamSession.stop()
+                try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second cooldown
+                await self.streamSession.start()
+                NSLog("[Stream] 🔄 Silent auto-recovery restart issued.")
+            }
+            return // Skip showing the error UI
+        }
+
         let newErrorMessage = formatStreamingError(error)
         if newErrorMessage != self.errorMessage {
           showError(newErrorMessage)

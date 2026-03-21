@@ -63,7 +63,6 @@ class GeminiSessionViewModel: ObservableObject {
       guard let self else { return }
       Task { @MainActor in
         self.userTranscript += text
-        self.aiTranscript = ""
       }
     }
 
@@ -71,6 +70,7 @@ class GeminiSessionViewModel: ObservableObject {
       guard let self else { return }
       Task { @MainActor in
         self.aiTranscript += text
+        self.userTranscript = ""
       }
     }
 

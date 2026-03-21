@@ -33,6 +33,7 @@ struct CameraAccessApp: App {
   @StateObject private var wearablesViewModel: WearablesViewModel
 
   init() {
+    SettingsManager.shared.resetAll()
     do {
       try Wearables.configure()
     } catch {
