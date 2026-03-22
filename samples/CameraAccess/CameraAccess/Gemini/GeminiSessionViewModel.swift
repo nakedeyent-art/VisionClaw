@@ -19,6 +19,9 @@ class GeminiSessionViewModel: ObservableObject {
   private var lastVideoFrameTime: Date = .distantPast
   private var stateObservation: Task<Void, Never>?
 
+  /// Set by parent view to trigger photo capture on the stream session
+  var onCapturePhoto: (() -> Void)?
+
   var streamingMode: StreamingMode = .glasses
 
   func startSession() async {
@@ -90,6 +93,9 @@ class GeminiSessionViewModel: ObservableObject {
 
     // Wire tool call handling
     toolCallRouter = ToolCallRouter(bridge: openClawBridge)
+    toolCallRouter?.onCapturePhoto = { [weak self] in
+      self?.onCapturePhoto?()
+    }
 
     geminiService.onToolCall = { [weak self] toolCall in
       guard let self else { return }

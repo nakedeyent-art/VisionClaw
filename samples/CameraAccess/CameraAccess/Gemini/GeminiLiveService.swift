@@ -182,7 +182,10 @@ class GeminiLiveService: ObservableObject {
       "setup": [
         "model": GeminiConfig.model,
         "generationConfig": [
-          "responseModalities": ["AUDIO"]
+          "responseModalities": ["AUDIO"],
+          "speechConfig": [
+            "languageCode": "en-US"
+          ]
         ],
         "systemInstruction": [
           "parts": [
@@ -206,8 +209,8 @@ class GeminiLiveService: ObservableObject {
             "targetTokens": 80000
           ]
         ],
-        "inputAudioTranscription": [:] as [String: Any],
-        "outputAudioTranscription": [:] as [String: Any]
+        "inputAudioTranscription": ["languageCode": "en-US"] as [String: Any],
+        "outputAudioTranscription": ["languageCode": "en-US"] as [String: Any]
       ]
     ]
     sendJSON(setup)
