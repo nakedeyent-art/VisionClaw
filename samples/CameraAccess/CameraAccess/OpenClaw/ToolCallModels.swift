@@ -85,8 +85,17 @@ enum ToolCallStatus: Equatable {
 enum ToolDeclarations {
 
   static func allDeclarations() -> [[String: Any]] {
-    return [execute]
+    return [execute, takePicture]
   }
+
+  static let takePicture: [String: Any] = [
+    "name": "take_picture",
+    "description": "Take a photo using the camera. Use this when the user asks you to take a picture, snap a photo, capture this, or photograph something. This triggers the device camera hardware.",
+    "parameters": [
+      "type": "object",
+      "properties": [:] as [String: Any]
+    ] as [String: Any]
+  ]
 
   static let execute: [String: Any] = [
     "name": "execute",

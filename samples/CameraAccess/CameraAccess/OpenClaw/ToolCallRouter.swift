@@ -1,9 +1,13 @@
 import Foundation
+import UIKit
 
 @MainActor
 class ToolCallRouter {
   private let bridge: OpenClawBridge
   private var inFlightTasks: [String: Task<Void, Never>] = [:]
+
+  /// Callback to trigger photo capture on the device camera
+  var onCapturePhoto: (() -> Void)?
 
   init(bridge: OpenClawBridge) {
     self.bridge = bridge
@@ -20,6 +24,19 @@ class ToolCallRouter {
 
     NSLog("[ToolCall] Received: %@ (id: %@) args: %@",
           callName, callId, String(describing: call.args))
+
+    // Handle take_picture locally (camera is on this device, not on Bergen)
+    if callName == "take_picture" {
+      NSLog("[ToolCall] 📸 take_picture — triggering local camera capture")
+      triggerScreenFlash()
+      onCapturePhoto?()
+      let response = buildToolResponse(
+        callId: callId, name: callName,
+        result: .success("Photo captured successfully. The image is now visible on the user's screen.")
+      )
+      sendResponse(response)
+      return
+    }
 
     let task = Task { @MainActor in
       let taskDesc = call.args["task"] as? String ?? String(describing: call.args)
@@ -81,5 +98,22 @@ class ToolCallRouter {
         ]
       ]
     ]
+  }
+
+  /// Classic "camera flash" screen effect
+  private func triggerScreenFlash() {
+    DispatchQueue.main.async {
+      guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+            let window = windowScene.windows.first(where: { $0.isKeyWindow }) else { return }
+      let flashView = UIView(frame: window.bounds)
+      flashView.backgroundColor = .white
+      flashView.alpha = 1.0
+      window.addSubview(flashView)
+      UIView.animate(withDuration: 0.15, delay: 0, options: .curveEaseOut, animations: {
+        flashView.alpha = 0.0
+      }) { _ in
+        flashView.removeFromSuperview()
+      }
+    }
   }
 }

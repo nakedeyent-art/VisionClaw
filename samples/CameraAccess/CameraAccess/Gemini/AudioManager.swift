@@ -56,6 +56,14 @@ class AudioManager {
     try session.setPreferredSampleRate(GeminiConfig.inputAudioSampleRate)
     try session.setPreferredIOBufferDuration(0.064)
     try session.setActive(true)
+    // Verify hardware actually honored our preferred sample rate
+    let actualRate = session.sampleRate
+    if actualRate != GeminiConfig.inputAudioSampleRate {
+      NSLog("[Audio] ⚠️ Hardware rate=%.0fHz (requested %.0fHz) — resampling REQUIRED",
+            actualRate, GeminiConfig.inputAudioSampleRate)
+    } else {
+      NSLog("[Audio] ✅ Hardware rate=%.0fHz matches target", actualRate)
+    }
     if SettingsManager.shared.speakerOutputEnabled {
       try session.overrideOutputAudioPort(.speaker)
       NSLog("[Audio] Speaker output override: ON (iPhone speaker)")
@@ -392,7 +400,7 @@ class AudioManager {
 
     var error: NSError?
     var consumed = false
-    converter.convert(to: outputBuffer, error: &error) { _, outStatus in
+    let status = converter.convert(to: outputBuffer, error: &error) { _, outStatus in
       if consumed {
         outStatus.pointee = .noDataNow
         return nil
@@ -402,7 +410,17 @@ class AudioManager {
       return inputBuffer
     }
 
-    if error != nil {
+    // Check conversion actually produced valid data
+    if let error {
+      NSLog("[Audio] Converter error: %@", error.localizedDescription)
+      return nil
+    }
+    guard status == .haveData || status == .inputRanDry else {
+      NSLog("[Audio] Converter status: %d (expected haveData/inputRanDry)", status.rawValue)
+      return nil
+    }
+    guard outputBuffer.frameLength > 0 else {
+      NSLog("[Audio] Converter produced 0 frames")
       return nil
     }
 
