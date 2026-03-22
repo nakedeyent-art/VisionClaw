@@ -184,6 +184,11 @@ class GeminiLiveService: ObservableObject {
         "generationConfig": [
           "responseModalities": ["AUDIO"],
           "speechConfig": [
+            "voiceConfig": [
+              "prebuiltVoiceConfig": [
+                "voiceName": "Puck"
+              ]
+            ],
             "languageCode": "en-US"
           ]
         ],
