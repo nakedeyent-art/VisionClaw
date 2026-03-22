@@ -170,6 +170,11 @@ class GeminiLiveService: ObservableObject {
         "generationConfig": [
           "responseModalities": ["AUDIO"],
           "speechConfig": [
+            "voiceConfig": [
+              "prebuiltVoiceConfig": [
+                "voiceName": "Puck"
+              ]
+            ],
             "languageCode": "en-US"
           ]
         ],
@@ -190,8 +195,8 @@ class GeminiLiveService: ObservableObject {
           "activityHandling": "START_OF_ACTIVITY_INTERRUPTS",
           "turnCoverage": "TURN_INCLUDES_ONLY_ACTIVITY"
         ],
-        "inputAudioTranscription": ["languageCode": "en-US"] as [String: Any],
-        "outputAudioTranscription": ["languageCode": "en-US"] as [String: Any]
+        "inputAudioTranscription": [:] as [String: Any],
+        "outputAudioTranscription": [:] as [String: Any]
       ]
     ]
     sendJSON(setup)
