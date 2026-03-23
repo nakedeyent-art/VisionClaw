@@ -95,8 +95,12 @@ struct StreamView: View {
       }
 
       // Bottom controls layer
-      VStack {
+      VStack(spacing: 12) {
         Spacer()
+        // Text input bar (visible when Gemini is active)
+        if geminiVM.isGeminiActive {
+          TextInputBar(geminiVM: geminiVM)
+        }
         ControlsView(viewModel: viewModel, geminiVM: geminiVM, webrtcVM: webrtcVM)
       }
       .padding(.all, 24)
@@ -206,5 +210,48 @@ struct ControlsView: View {
       .opacity(geminiVM.isGeminiActive ? 0.4 : 1.0)
       .disabled(geminiVM.isGeminiActive)
     }
+  }
+}
+
+/// Text input bar for typing commands directly to Gemini when voice is unreliable.
+struct TextInputBar: View {
+  @ObservedObject var geminiVM: GeminiSessionViewModel
+  @State private var textInput: String = ""
+  @FocusState private var isFocused: Bool
+
+  var body: some View {
+    HStack(spacing: 8) {
+      TextField("Type a command...", text: $textInput)
+        .textFieldStyle(.plain)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .foregroundColor(.white)
+        .focused($isFocused)
+        .submitLabel(.send)
+        .onSubmit { sendMessage() }
+
+      Button(action: sendMessage) {
+        Image(systemName: "arrow.up.circle.fill")
+          .font(.system(size: 28))
+          .foregroundColor(textInput.isEmpty ? .gray : .white)
+      }
+      .disabled(textInput.isEmpty)
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 6)
+    .background(Color.black.opacity(0.6))
+    .cornerRadius(24)
+    .overlay(
+      RoundedRectangle(cornerRadius: 24)
+        .stroke(Color.white.opacity(0.2), lineWidth: 1)
+    )
+  }
+
+  private func sendMessage() {
+    let message = textInput.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !message.isEmpty else { return }
+    geminiVM.sendTextMessage(message)
+    textInput = ""
+    isFocused = false
   }
 }

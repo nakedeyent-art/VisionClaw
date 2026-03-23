@@ -192,4 +192,12 @@ class GeminiSessionViewModel: ObservableObject {
     geminiService.sendVideoFrame(image: image)
   }
 
+  /// Send a typed text message to Gemini, bypassing the audio pipeline.
+  func sendTextMessage(_ text: String) {
+    guard isGeminiActive, connectionState == .ready, !text.isEmpty else { return }
+    userTranscript = text
+    aiTranscript = ""
+    geminiService.sendText(text)
+  }
+
 }
