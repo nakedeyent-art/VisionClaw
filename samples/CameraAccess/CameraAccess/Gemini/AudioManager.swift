@@ -49,10 +49,26 @@ class AudioManager {
     } else {
       try session.setCategory(
         .playAndRecord,
-        mode: .videoChat,
-        options: [.allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers, .defaultToSpeaker]
+        mode: .voiceChat,
+        options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP, .mixWithOthers]
       )
     }
+
+    // CRITICAL: Force the built-in microphone as the preferred input.
+    // When Bluetooth devices (Ray-Ban Metas, AirPods) are connected, iOS may
+    // route audio input through a garbled HFP channel, producing noise.
+    // The video comes from glasses via MWDAT, but audio capture must use
+    // the iPhone's built-in mic for clean 16kHz PCM.
+    if let availableInputs = session.availableInputs {
+      NSLog("[Audio] Available inputs: %@", availableInputs.map { "\($0.portName) (\($0.portType.rawValue))" }.joined(separator: ", "))
+      if let builtInMic = availableInputs.first(where: { $0.portType == .builtInMic }) {
+        try session.setPreferredInput(builtInMic)
+        NSLog("[Audio] ✅ Forced preferred input: %@ (%@)", builtInMic.portName, builtInMic.portType.rawValue)
+      } else {
+        NSLog("[Audio] ⚠️ No built-in mic found in available inputs!")
+      }
+    }
+
     try session.setPreferredSampleRate(GeminiConfig.inputAudioSampleRate)
     try session.setPreferredIOBufferDuration(0.064)
     try session.setActive(true)
@@ -64,11 +80,22 @@ class AudioManager {
     } else {
       NSLog("[Audio] ✅ Hardware rate=%.0fHz matches target", actualRate)
     }
+
+    // Log the actual audio route for diagnostics
+    let currentRoute = session.currentRoute
+    for input in currentRoute.inputs {
+      NSLog("[Audio] 🎤 Active input: %@ (%@) channels=%d",
+            input.portName, input.portType.rawValue, input.channels?.count ?? 0)
+    }
+    for output in currentRoute.outputs {
+      NSLog("[Audio] 🔊 Active output: %@ (%@)", output.portName, output.portType.rawValue)
+    }
+
     if SettingsManager.shared.speakerOutputEnabled {
       try session.overrideOutputAudioPort(.speaker)
       NSLog("[Audio] Speaker output override: ON (iPhone speaker)")
     }
-    NSLog("[Audio] Session mode: %@", useIPhoneMode ? "voiceChat (iPhone)" : "videoChat (glasses)")
+    NSLog("[Audio] Session mode: %@", useIPhoneMode ? "voiceChat (iPhone)" : "voiceChat (glasses)")
 
     setupInterruptionHandling()
     setupAppLifecycleObservers()
