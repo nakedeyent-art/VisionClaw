@@ -201,7 +201,10 @@ class AudioManager {
       return Data()  // Not Float32 format
     }
 
-    // Step 2: Resample if rates differ, using linear interpolation
+    // Step 2: Resample with anti-aliasing (windowed average, not linear interpolation).
+    // Linear interpolation causes high-frequency folding artifacts that confuse speech recognition.
+    // Windowed averaging acts as a natural low-pass filter: for each output sample,
+    // average ALL input samples that fall within its window [i*ratio, (i+1)*ratio).
     let outputSamples: [Float]
     if abs(inputRate - outputRate) < 1.0 {
       // Same rate — no resampling needed
@@ -212,12 +215,15 @@ class AudioManager {
       guard outputFrames > 0 else { return Data() }
       var resampled = [Float](repeating: 0, count: outputFrames)
       for i in 0..<outputFrames {
-        let srcPos = Double(i) * ratio
-        let idx = Int(srcPos)
-        let frac = Float(srcPos - Double(idx))
-        let s0 = monoSamples[min(idx, inputFrames - 1)]
-        let s1 = monoSamples[min(idx + 1, inputFrames - 1)]
-        resampled[i] = s0 + frac * (s1 - s0)  // Linear interpolation
+        // Window of input samples for this output sample
+        let windowStart = Int(Double(i) * ratio)
+        let windowEnd = min(Int(Double(i + 1) * ratio), inputFrames)
+        let windowSize = max(windowEnd - windowStart, 1)
+        var sum: Float = 0
+        for j in windowStart..<windowEnd {
+          sum += monoSamples[j]
+        }
+        resampled[i] = sum / Float(windowSize)
       }
       outputSamples = resampled
     }
