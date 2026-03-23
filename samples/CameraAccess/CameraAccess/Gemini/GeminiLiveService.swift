@@ -131,6 +131,28 @@ class GeminiLiveService: ObservableObject {
     }
   }
 
+  /// Send a text message to Gemini, bypassing the audio pipeline entirely.
+  /// Uses the `clientContent` message format for the Live API.
+  func sendText(_ text: String) {
+    guard connectionState == .ready, !text.isEmpty else { return }
+    sendQueue.async { [weak self] in
+      let json: [String: Any] = [
+        "clientContent": [
+          "turns": [
+            [
+              "role": "user",
+              "parts": [
+                ["text": text]
+              ]
+            ]
+          ],
+          "turnComplete": true
+        ]
+      ]
+      self?.sendJSON(json)
+    }
+  }
+
   func sendVideoFrame(image: UIImage) {
     guard connectionState == .ready else { return }
     sendQueue.async { [weak self] in
