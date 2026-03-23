@@ -121,52 +121,28 @@ class AudioManager {
           inputNativeFormat.commonFormat == .pcmFormatInt16 ? "Int16" : "Other",
           inputNativeFormat.sampleRate, inputNativeFormat.channelCount)
 
-    // The target format Gemini expects: 16kHz Float32 Mono
-    let geminiInputFormat = AVAudioFormat(
-      commonFormat: .pcmFormatFloat32,
-      sampleRate: GeminiConfig.inputAudioSampleRate,
-      channels: GeminiConfig.audioChannels,
-      interleaved: false
-    )!
+    let nativeRate = inputNativeFormat.sampleRate
+    let nativeChannels = Int(inputNativeFormat.channelCount)
+    let targetRate = GeminiConfig.inputAudioSampleRate  // 16000
 
-    // ──────────────────────────────────────────────────────────────────────
-    //  MIXER NODE APPROACH (Apple's recommended pattern for format conversion)
-    //
-    //  Instead of manually using AVAudioConverter (which silently produces
-    //  garbled output on certain hardware configs like iPhone 16 Pro Max),
-    //  we insert a dedicated mixer node between the input and our tap.
-    //  The mixer handles sample rate + channel conversion internally using
-    //  Apple's DSP — this is the standard, reliable iOS pattern.
-    //
-    //  Input Node (48kHz stereo) → Mixer Node → Tap (16kHz mono)
-    // ──────────────────────────────────────────────────────────────────────
-
-    let formatConverterMixer = AVAudioMixerNode()
-    audioEngine.attach(formatConverterMixer)
-
-    // Connect input → mixer in the input's native format
-    audioEngine.connect(inputNode, to: formatConverterMixer, format: inputNativeFormat)
-
-    NSLog("[Audio] Mixer pipeline: %.0fHz %dch → %.0fHz %dch",
-          inputNativeFormat.sampleRate, inputNativeFormat.channelCount,
-          geminiInputFormat.sampleRate, geminiInputFormat.channelCount)
+    NSLog("[Audio] Manual downsample pipeline: %.0fHz %dch → %.0fHz 1ch",
+          nativeRate, nativeChannels, targetRate)
 
     sendQueue.async { self.accumulatedData = Data() }
 
     var tapCount = 0
-    // Tap the mixer in our TARGET format — the mixer does the conversion!
-    formatConverterMixer.installTap(onBus: 0, bufferSize: 4096, format: geminiInputFormat) { [weak self] buffer, _ in
+    // Tap in NATIVE format (always works on all hardware), then manually convert
+    inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputNativeFormat) { [weak self] buffer, _ in
       guard let self else { return }
 
       tapCount += 1
-      // Buffer is already 16kHz Float32 Mono — just convert to Int16
-      let pcmData = self.float32BufferToInt16Data(buffer)
+      let pcmData = self.manualDownsampleToInt16(
+        buffer, inputRate: nativeRate, outputRate: targetRate, inputChannels: nativeChannels)
 
-      if tapCount <= 3 {
-        NSLog("[Audio] Tap #%d: %d frames, %d bytes (format: %.0fHz %dch %@)",
+      if tapCount <= 5 {
+        NSLog("[Audio] Tap #%d: %d input frames → %d output bytes (%.0fHz %dch → %.0fHz 1ch)",
               tapCount, buffer.frameLength, pcmData.count,
-              buffer.format.sampleRate, buffer.format.channelCount,
-              buffer.format.commonFormat == .pcmFormatFloat32 ? "Float32" : "Other")
+              nativeRate, nativeChannels, targetRate)
       }
 
       guard !pcmData.isEmpty else { return }
@@ -179,7 +155,7 @@ class AudioManager {
           self.accumulatedData = Data()
           if tapCount <= 5 {
             NSLog("[Audio] Sending chunk: %d bytes (~%dms)",
-                  chunk.count, chunk.count / 32)  // 16kHz * 2 bytes = 32 bytes/ms
+                  chunk.count, chunk.count / 32)
           }
           self.onAudioCaptured?(chunk)
         }
@@ -189,6 +165,71 @@ class AudioManager {
     try audioEngine.start()
     playerNode.play()
     isCapturing = true
+  }
+
+  /// Manual downsample: native Float32 (any rate, any channels) → 16kHz mono Int16 PCM.
+  /// Uses linear interpolation for sample rate conversion and channel averaging for stereo→mono.
+  /// Zero dependence on Apple's AVAudioConverter or MixerNode (both failed on iPhone 16 Pro Max).
+  private func manualDownsampleToInt16(
+    _ buffer: AVAudioPCMBuffer,
+    inputRate: Double,
+    outputRate: Double,
+    inputChannels: Int
+  ) -> Data {
+    let inputFrames = Int(buffer.frameLength)
+    guard inputFrames > 0 else { return Data() }
+
+    // Step 1: Get mono float samples (average channels if stereo)
+    var monoSamples = [Float](repeating: 0, count: inputFrames)
+    if let floatData = buffer.floatChannelData {
+      if inputChannels == 1 {
+        // Mono: direct copy
+        for i in 0..<inputFrames {
+          monoSamples[i] = floatData[0][i]
+        }
+      } else {
+        // Stereo+: average all channels
+        for i in 0..<inputFrames {
+          var sum: Float = 0
+          for ch in 0..<inputChannels {
+            sum += floatData[ch][i]
+          }
+          monoSamples[i] = sum / Float(inputChannels)
+        }
+      }
+    } else {
+      return Data()  // Not Float32 format
+    }
+
+    // Step 2: Resample if rates differ, using linear interpolation
+    let outputSamples: [Float]
+    if abs(inputRate - outputRate) < 1.0 {
+      // Same rate — no resampling needed
+      outputSamples = monoSamples
+    } else {
+      let ratio = inputRate / outputRate  // e.g., 48000/16000 = 3.0
+      let outputFrames = Int(Double(inputFrames) / ratio)
+      guard outputFrames > 0 else { return Data() }
+      var resampled = [Float](repeating: 0, count: outputFrames)
+      for i in 0..<outputFrames {
+        let srcPos = Double(i) * ratio
+        let idx = Int(srcPos)
+        let frac = Float(srcPos - Double(idx))
+        let s0 = monoSamples[min(idx, inputFrames - 1)]
+        let s1 = monoSamples[min(idx + 1, inputFrames - 1)]
+        resampled[i] = s0 + frac * (s1 - s0)  // Linear interpolation
+      }
+      outputSamples = resampled
+    }
+
+    // Step 3: Convert Float32 [-1.0, 1.0] → Int16 [-32767, 32767]
+    var int16Array = [Int16](repeating: 0, count: outputSamples.count)
+    for i in 0..<outputSamples.count {
+      let clamped = max(-1.0, min(1.0, outputSamples[i]))
+      int16Array[i] = Int16(clamped * Float(Int16.max))
+    }
+
+    return Data(bytes: &int16Array, count: int16Array.count * MemoryLayout<Int16>.size)
   }
 
   func playAudio(data: Data) {
