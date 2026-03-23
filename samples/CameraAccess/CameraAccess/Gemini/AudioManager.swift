@@ -36,36 +36,44 @@ class AudioManager {
   func setupAudioSession(useIPhoneMode: Bool = false) throws {
     self.useIPhoneMode = useIPhoneMode
     let session = AVAudioSession.sharedInstance()
-    // voiceChat: aggressive echo cancellation (mic + speaker co-located on phone)
-    // videoChat: mild AEC (mic on glasses, speaker on glasses)
-    // When Speaker Output is ON, speaker is on phone so always use voiceChat AEC
     let forceSpeaker = SettingsManager.shared.speakerOutputEnabled
-    if useIPhoneMode || forceSpeaker {
-      try session.setCategory(
-        .playAndRecord,
-        mode: .voiceChat,
-        options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP, .mixWithOthers]
-      )
-    } else {
-      try session.setCategory(
-        .playAndRecord,
-        mode: .voiceChat,
-        options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP, .mixWithOthers]
-      )
-    }
 
-    // CRITICAL: Force the built-in microphone as the preferred input.
-    // When Bluetooth devices (Ray-Ban Metas, AirPods) are connected, iOS may
-    // route audio input through a garbled HFP channel, producing noise.
-    // The video comes from glasses via MWDAT, but audio capture must use
-    // the iPhone's built-in mic for clean 16kHz PCM.
-    if let availableInputs = session.availableInputs {
-      NSLog("[Audio] Available inputs: %@", availableInputs.map { "\($0.portName) (\($0.portType.rawValue))" }.joined(separator: ", "))
-      if let builtInMic = availableInputs.first(where: { $0.portType == .builtInMic }) {
+    if useIPhoneMode || forceSpeaker {
+      // iPhone mode: use built-in mic + speaker with aggressive echo cancellation
+      try session.setCategory(
+        .playAndRecord,
+        mode: .voiceChat,
+        options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP, .mixWithOthers]
+      )
+      // Force built-in mic for iPhone mode
+      if let availableInputs = session.availableInputs,
+         let builtInMic = availableInputs.first(where: { $0.portType == .builtInMic }) {
         try session.setPreferredInput(builtInMic)
-        NSLog("[Audio] ✅ Forced preferred input: %@ (%@)", builtInMic.portName, builtInMic.portType.rawValue)
-      } else {
-        NSLog("[Audio] ⚠️ No built-in mic found in available inputs!")
+        NSLog("[Audio] ✅ iPhone mode: forced built-in mic")
+      }
+    } else {
+      // Glasses mode: use the glasses' Bluetooth mic (right next to user's mouth!)
+      // This is WHY the Meta app works perfectly — it uses this same mic.
+      // .allowBluetoothHFP routes audio INPUT through the glasses' mic.
+      // .videoChat uses mild AEC appropriate for glasses (mic + speaker both on glasses).
+      try session.setCategory(
+        .playAndRecord,
+        mode: .videoChat,
+        options: [.allowBluetoothHFP, .allowBluetoothA2DP, .defaultToSpeaker, .mixWithOthers]
+      )
+      // Let iOS pick the Bluetooth mic (glasses) — do NOT force built-in mic
+      // The manual downsample handles any sample rate the BT device provides
+      if let availableInputs = session.availableInputs {
+        NSLog("[Audio] Available inputs: %@", availableInputs.map { "\($0.portName) (\($0.portType.rawValue))" }.joined(separator: ", "))
+        // Prefer Bluetooth input (glasses mic) if available
+        if let btMic = availableInputs.first(where: {
+          $0.portType == .bluetoothHFP || $0.portType == .bluetoothA2DP || $0.portType == .bluetoothLE
+        }) {
+          try session.setPreferredInput(btMic)
+          NSLog("[Audio] ✅ Glasses mode: preferred Bluetooth mic: %@", btMic.portName)
+        } else {
+          NSLog("[Audio] ⚠️ No Bluetooth mic found — falling back to default input")
+        }
       }
     }
 
@@ -95,7 +103,7 @@ class AudioManager {
       try session.overrideOutputAudioPort(.speaker)
       NSLog("[Audio] Speaker output override: ON (iPhone speaker)")
     }
-    NSLog("[Audio] Session mode: %@", useIPhoneMode ? "voiceChat (iPhone)" : "voiceChat (glasses)")
+    NSLog("[Audio] Session mode: %@", useIPhoneMode ? "voiceChat (iPhone mic)" : "videoChat (glasses BT mic)")
 
     setupInterruptionHandling()
     setupAppLifecycleObservers()
