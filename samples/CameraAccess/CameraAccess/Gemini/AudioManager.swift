@@ -94,48 +94,55 @@ class AudioManager {
           inputNativeFormat.commonFormat == .pcmFormatInt16 ? "Int16" : "Other",
           inputNativeFormat.sampleRate, inputNativeFormat.channelCount)
 
-    // Always tap in native format (Float32) and convert to Int16 PCM manually.
-    // AVAudioEngine taps don't reliably convert between sample formats inline.
-    let needsResample = inputNativeFormat.sampleRate != GeminiConfig.inputAudioSampleRate
-        || inputNativeFormat.channelCount != GeminiConfig.audioChannels
+    // The target format Gemini expects: 16kHz Float32 Mono
+    let geminiInputFormat = AVAudioFormat(
+      commonFormat: .pcmFormatFloat32,
+      sampleRate: GeminiConfig.inputAudioSampleRate,
+      channels: GeminiConfig.audioChannels,
+      interleaved: false
+    )!
 
-    NSLog("[Audio] Needs resample: %@", needsResample ? "YES" : "NO")
+    // ──────────────────────────────────────────────────────────────────────
+    //  MIXER NODE APPROACH (Apple's recommended pattern for format conversion)
+    //
+    //  Instead of manually using AVAudioConverter (which silently produces
+    //  garbled output on certain hardware configs like iPhone 16 Pro Max),
+    //  we insert a dedicated mixer node between the input and our tap.
+    //  The mixer handles sample rate + channel conversion internally using
+    //  Apple's DSP — this is the standard, reliable iOS pattern.
+    //
+    //  Input Node (48kHz stereo) → Mixer Node → Tap (16kHz mono)
+    // ──────────────────────────────────────────────────────────────────────
+
+    let formatConverterMixer = AVAudioMixerNode()
+    audioEngine.attach(formatConverterMixer)
+
+    // Connect input → mixer in the input's native format
+    audioEngine.connect(inputNode, to: formatConverterMixer, format: inputNativeFormat)
+
+    NSLog("[Audio] Mixer pipeline: %.0fHz %dch → %.0fHz %dch",
+          inputNativeFormat.sampleRate, inputNativeFormat.channelCount,
+          geminiInputFormat.sampleRate, geminiInputFormat.channelCount)
 
     sendQueue.async { self.accumulatedData = Data() }
 
-    var converter: AVAudioConverter?
-    if needsResample {
-      let resampleFormat = AVAudioFormat(
-        commonFormat: .pcmFormatFloat32,
-        sampleRate: GeminiConfig.inputAudioSampleRate,
-        channels: GeminiConfig.audioChannels,
-        interleaved: false
-      )!
-      converter = AVAudioConverter(from: inputNativeFormat, to: resampleFormat)
-    }
-
     var tapCount = 0
-    inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputNativeFormat) { [weak self] buffer, _ in
+    // Tap the mixer in our TARGET format — the mixer does the conversion!
+    formatConverterMixer.installTap(onBus: 0, bufferSize: 4096, format: geminiInputFormat) { [weak self] buffer, _ in
       guard let self else { return }
 
       tapCount += 1
-      let pcmData: Data
+      // Buffer is already 16kHz Float32 Mono — just convert to Int16
+      let pcmData = self.float32BufferToInt16Data(buffer)
 
-      if let converter {
-        let resampleFormat = AVAudioFormat(
-          commonFormat: .pcmFormatFloat32,
-          sampleRate: GeminiConfig.inputAudioSampleRate,
-          channels: GeminiConfig.audioChannels,
-          interleaved: false
-        )!
-        guard let resampled = self.convertBuffer(buffer, using: converter, targetFormat: resampleFormat) else {
-          if tapCount <= 3 { NSLog("[Audio] Resample failed for tap #%d", tapCount) }
-          return
-        }
-        pcmData = self.float32BufferToInt16Data(resampled)
-      } else {
-        pcmData = self.float32BufferToInt16Data(buffer)
+      if tapCount <= 3 {
+        NSLog("[Audio] Tap #%d: %d frames, %d bytes (format: %.0fHz %dch %@)",
+              tapCount, buffer.frameLength, pcmData.count,
+              buffer.format.sampleRate, buffer.format.channelCount,
+              buffer.format.commonFormat == .pcmFormatFloat32 ? "Float32" : "Other")
       }
+
+      guard !pcmData.isEmpty else { return }
 
       // Accumulate into ~100ms chunks before sending to Gemini
       self.sendQueue.async {
@@ -143,7 +150,7 @@ class AudioManager {
         if self.accumulatedData.count >= self.minSendBytes {
           let chunk = self.accumulatedData
           self.accumulatedData = Data()
-          if tapCount <= 3 {
+          if tapCount <= 5 {
             NSLog("[Audio] Sending chunk: %d bytes (~%dms)",
                   chunk.count, chunk.count / 32)  // 16kHz * 2 bytes = 32 bytes/ms
           }
