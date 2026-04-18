@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Combine
 
 @MainActor
 class GeminiSessionViewModel: ObservableObject {
@@ -7,8 +8,10 @@ class GeminiSessionViewModel: ObservableObject {
   @Published var connectionState: GeminiConnectionState = .disconnected
   @Published var isModelSpeaking: Bool = false
   @Published var errorMessage: String?
+  @Published var openClawErrorMessage: String?
   @Published var userTranscript: String = ""
   @Published var aiTranscript: String = ""
+  @Published var isListeningForSpeech: Bool = false
   @Published var toolCallStatus: ToolCallStatus = .idle
   @Published var openClawConnectionState: OpenClawConnectionState = .notConfigured
   private let geminiService = GeminiLiveService()
@@ -16,8 +19,11 @@ class GeminiSessionViewModel: ObservableObject {
   private var toolCallRouter: ToolCallRouter?
   private let audioManager = AudioManager()
   private let eventClient = OpenClawEventClient()
+  private let speechManager = SpeechToTextManager()
+  private var cancellables = Set<AnyCancellable>()
   private var lastVideoFrameTime: Date = .distantPast
   private var stateObservation: Task<Void, Never>?
+  private var reconnectTask: Task<Void, Never>?
 
   /// Set by parent view to trigger photo capture on the stream session
   var onCapturePhoto: (() -> Void)?
@@ -34,16 +40,36 @@ class GeminiSessionViewModel: ObservableObject {
 
     isGeminiActive = true
 
-    // Wire audio callbacks
-    audioManager.onAudioCaptured = { [weak self] data in
-      guard let self else { return }
-      Task { @MainActor in
-        // Mute mic while model speaks when speaker is on the phone
-        // (loudspeaker + co-located mic overwhelms iOS echo cancellation)
-        let speakerOnPhone = self.streamingMode == .iPhone || SettingsManager.shared.speakerOutputEnabled
-        if speakerOnPhone && self.geminiService.isModelSpeaking { return }
-        self.geminiService.sendAudio(data: data)
+    // Hook up SFSpeech text transcriptions to Gemini via sendText
+    speechManager.$finalTranscribedText
+      .receive(on: DispatchQueue.main)
+      .sink { [weak self] text in
+        guard let self = self, !text.isEmpty else { return }
+        self.sendTextMessage(text)
       }
+      .store(in: &cancellables)
+
+    speechManager.$partialTranscribedText
+      .receive(on: DispatchQueue.main)
+      .sink { [weak self] partial in
+        guard let self = self, !partial.isEmpty else { return }
+        self.userTranscript = partial
+      }
+      .store(in: &cancellables)
+
+    speechManager.$isListening
+      .receive(on: DispatchQueue.main)
+      .assign(to: &$isListeningForSpeech)
+
+    // Wire audio callbacks (we bypass Gemini's audio pipeline completely now
+    // to strictly rely on our SFSpeechRecognizer text)
+    audioManager.onAudioCaptured = { [weak self] data in
+      // Optionally we could send audio AND text, but doing text-only 
+      // completely prevents Gemini hallucinations from its native decoder.
+    }
+
+    audioManager.onAudioBuffer = { [weak self] buffer in
+      self?.speechManager.processBuffer(buffer)
     }
 
     geminiService.onAudioReceived = { [weak self] data in
@@ -82,8 +108,10 @@ class GeminiSessionViewModel: ObservableObject {
       guard let self else { return }
       Task { @MainActor in
         guard self.isGeminiActive else { return }
-        self.stopSession()
-        self.errorMessage = "Connection lost: \(reason ?? "Unknown error")"
+        self.connectionState = .disconnected
+        self.geminiService.disconnect()
+        self.errorMessage = "Connection lost: \(reason ?? "Unknown error"). Reconnecting..."
+        self.scheduleReconnection()
       }
     }
 
@@ -125,6 +153,17 @@ class GeminiSessionViewModel: ObservableObject {
         self.isModelSpeaking = self.geminiService.isModelSpeaking
         self.toolCallStatus = self.openClawBridge.lastToolCallStatus
         self.openClawConnectionState = self.openClawBridge.connectionState
+        if case .unreachable(let msg) = self.openClawConnectionState {
+            if self.openClawErrorMessage == nil {
+                self.openClawErrorMessage = "OpenClaw Gateway Error: \(msg)"
+            }
+            // Attempt to ping OpenClaw occasionally to recover automatically
+            if Int.random(in: 0..<50) == 0 { 
+                Task { [weak self] in await self?.openClawBridge.checkConnection() }
+            }
+        } else {
+            self.openClawErrorMessage = nil       
+        }
       }
     }
 
@@ -156,9 +195,19 @@ class GeminiSessionViewModel: ObservableObject {
       return
     }
 
-    // Start mic capture
+    // Start mic capture AND start Apple Speech recognizer
     do {
       try audioManager.startCapture()
+      
+      // Request auth if needed and start the powerful local speech deciphering
+      speechManager.requestAuthorization { [weak self] authorized in
+        guard let self = self, authorized else { return }
+        do {
+          try self.speechManager.startProcessing(from: self.audioManager.audioEngine)
+        } catch {
+          print("Local speech fallback failed: \(error.localizedDescription)")
+        }
+      }
     } catch {
       errorMessage = "Mic capture failed: \(error.localizedDescription)"
       geminiService.disconnect()
@@ -184,9 +233,12 @@ class GeminiSessionViewModel: ObservableObject {
 
   func stopSession() {
     eventClient.disconnect()
+    reconnectTask?.cancel()
+    reconnectTask = nil
     toolCallRouter?.cancelAll()
     toolCallRouter = nil
     audioManager.stopCapture()
+    speechManager.cancelProcessing()
     geminiService.disconnect()
     stateObservation?.cancel()
     stateObservation = nil
@@ -213,6 +265,41 @@ class GeminiSessionViewModel: ObservableObject {
     userTranscript = text
     aiTranscript = ""
     geminiService.sendText(text)
+  }
+
+  func restartSpeechDictation() {
+    guard isGeminiActive else { return }
+    do {
+      try speechManager.startProcessing(from: audioManager.audioEngine)
+    } catch {
+      print("Failed to manually restart dictation: \(error.localizedDescription)")
+    }
+  }
+
+  private func scheduleReconnection() {
+    reconnectTask?.cancel()
+    reconnectTask = Task { [weak self] in
+      try? await Task.sleep(nanoseconds: 3_000_000_000) // 3 seconds
+      guard let self = self, !Task.isCancelled, self.isGeminiActive else { return }
+      self.errorMessage = "Attempting to reconnect..."
+      
+      // Update OpenClaw status
+      await self.openClawBridge.checkConnection()
+      
+      // Attempt connection to Gemini again
+      let setupOk = await self.geminiService.connect()
+      if setupOk {
+        self.errorMessage = nil
+        do {
+          try self.audioManager.startCapture()
+          self.restartSpeechDictation()
+        } catch {
+          self.errorMessage = "Mic error on reconnect: \(error.localizedDescription)"
+        }
+      } else {
+        self.scheduleReconnection()
+      }
+    }
   }
 
 }

@@ -15,6 +15,7 @@ struct SettingsView: View {
   @State private var videoStreamingEnabled: Bool = true
   @State private var proactiveNotificationsEnabled: Bool = true
   @State private var showResetConfirmation = false
+  @State private var showSavedConfirmation = false
 
   var body: some View {
     NavigationView {
@@ -25,8 +26,8 @@ struct SettingsView: View {
               .font(.caption)
               .foregroundColor(.secondary)
             TextField("Enter Gemini API key", text: $geminiAPIKey)
-              .autocapitalization(.none)
-              .disableAutocorrection(true)
+              .textInputAutocapitalization(.never)
+              .autocorrectionDisabled(true)
               .font(.system(.body, design: .monospaced))
           }
         }
@@ -120,11 +121,15 @@ struct SettingsView: View {
           }
         }
         ToolbarItem(placement: .navigationBarTrailing) {
-          Button("Save") {
+          Button(showSavedConfirmation ? "Saved ✓" : "Save") {
             save()
-            dismiss()
+            showSavedConfirmation = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+              dismiss()
+            }
           }
           .fontWeight(.semibold)
+          .foregroundColor(showSavedConfirmation ? .green : .accentColor)
         }
       }
       .alert("Reset Settings", isPresented: $showResetConfirmation) {
@@ -168,5 +173,10 @@ struct SettingsView: View {
     settings.speakerOutputEnabled = speakerOutputEnabled
     settings.videoStreamingEnabled = videoStreamingEnabled
     settings.proactiveNotificationsEnabled = proactiveNotificationsEnabled
+    UserDefaults.standard.synchronize()
+    NSLog("[Settings] Saved — apiKey: %@ | host: %@ | port: %@",
+          String(settings.geminiAPIKey.prefix(12)) + "...",
+          settings.openClawHost,
+          String(settings.openClawPort))
   }
 }

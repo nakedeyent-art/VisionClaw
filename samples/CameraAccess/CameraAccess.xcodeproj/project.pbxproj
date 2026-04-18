@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		6C368C0A2F8C865D00C02F9B /* LocalCameraAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C368C092F8C865D00C02F9B /* LocalCameraAccess.swift */; };
+		6C368C0B2F8C865D00C02F9B /* LocalCameraAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C368C092F8C865D00C02F9B /* LocalCameraAccess.swift */; };
 		8F2D23802E856711002D0588 /* DebugMenuViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F2D237F2E856711002D0588 /* DebugMenuViewModel.swift */; };
 		8F8F00782E8ACB4600A4BDAF /* WearablesViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F8F00772E8ACB4500A4BDAF /* WearablesViewModel.swift */; };
 		8FD96B7F2E6F0A9800F56AB1 /* CameraAccessApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FD96B792E6F0A9800F56AB1 /* CameraAccessApp.swift */; };
@@ -78,6 +80,7 @@
 
 /* Begin PBXFileReference section */
 		3A3A3A3A3A3A3A3A3A3A3A3A /* CameraAccess.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CameraAccess.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		6C368C092F8C865D00C02F9B /* LocalCameraAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalCameraAccess.swift; sourceTree = "<group>"; };
 		8F2D237F2E856711002D0588 /* DebugMenuViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugMenuViewModel.swift; sourceTree = "<group>"; };
 		8F8F00772E8ACB4500A4BDAF /* WearablesViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WearablesViewModel.swift; sourceTree = "<group>"; };
 		8FD96B6F2E6F0A9800F56AB1 /* StreamSessionViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamSessionViewModel.swift; sourceTree = "<group>"; };
@@ -152,6 +155,7 @@
 				8F2A14F12DDBCEB900D4E5F2 /* Frameworks */,
 				7A7A7A7A7A7A7A7A7A7A7A7A /* Products */,
 				E699CC962E8150670052C240 /* CameraAccessTests */,
+				6C368C092F8C865D00C02F9B /* LocalCameraAccess.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -399,6 +403,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				6C368C0B2F8C865D00C02F9B /* LocalCameraAccess.swift in Sources */,
 				8FD96B7F2E6F0A9800F56AB1 /* CameraAccessApp.swift in Sources */,
 				8FD96B812E6F0A9800F56AB1 /* HomeScreenView.swift in Sources */,
 				8F2D23802E856711002D0588 /* DebugMenuViewModel.swift in Sources */,
@@ -445,6 +450,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				6C368C0A2F8C865D00C02F9B /* LocalCameraAccess.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

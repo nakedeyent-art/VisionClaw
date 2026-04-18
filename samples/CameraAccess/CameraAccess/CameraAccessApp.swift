@@ -33,7 +33,9 @@ struct CameraAccessApp: App {
   @StateObject private var wearablesViewModel: WearablesViewModel
 
   init() {
-    SettingsManager.shared.resetAll()
+    // Clear stale UserDefaults from prior installs so Secrets.swift values take effect
+    CameraAccessApp.migrateSettingsIfNeeded()
+
     do {
       try Wearables.configure()
     } catch {
@@ -44,6 +46,16 @@ struct CameraAccessApp: App {
     let wearables = Wearables.shared
     self.wearables = wearables
     self._wearablesViewModel = StateObject(wrappedValue: WearablesViewModel(wearables: wearables))
+  }
+
+  /// One-time migration: if the persisted openClawHost still contains old defaults
+  /// (e.g. Bonjour hostname or a previous IP), wipe all settings so Secrets.swift wins.
+  private static func migrateSettingsIfNeeded() {
+    let migrationKey = "settingsMigrationV5"
+    guard !UserDefaults.standard.bool(forKey: migrationKey) else { return }
+    NSLog("[Migration] V5: Resetting settings to pick up Bergen cloud Secrets.swift values")
+    SettingsManager.shared.resetAll()
+    UserDefaults.standard.set(true, forKey: migrationKey)
   }
 
   var body: some Scene {

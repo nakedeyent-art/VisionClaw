@@ -26,7 +26,7 @@ class OpenClawBridge: ObservableObject {
     self.session = URLSession(configuration: config)
 
     let pingConfig = URLSessionConfiguration.default
-    pingConfig.timeoutIntervalForRequest = 5
+    pingConfig.timeoutIntervalForRequest = 15
     self.pingSession = URLSession(configuration: pingConfig)
 
     self.sessionKey = OpenClawBridge.stableSessionKey

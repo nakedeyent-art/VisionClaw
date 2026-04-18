@@ -138,6 +138,15 @@ struct StreamView: View {
     } message: {
       Text(geminiVM.errorMessage ?? "")
     }
+    // OpenClaw error alert
+    .alert("OpenClaw Diagnostics", isPresented: Binding(
+      get: { geminiVM.openClawErrorMessage != nil },
+      set: { if !$0 { geminiVM.openClawErrorMessage = nil } }
+    )) {
+      Button("OK") { geminiVM.openClawErrorMessage = nil }
+    } message: {
+      Text(geminiVM.openClawErrorMessage ?? "")
+    }
     // WebRTC error alert
     .alert("Live Stream", isPresented: Binding(
       get: { webrtcVM.errorMessage != nil },
@@ -229,6 +238,14 @@ struct TextInputBar: View {
         .focused($isFocused)
         .submitLabel(.send)
         .onSubmit { sendMessage() }
+
+      Button(action: {
+          geminiVM.restartSpeechDictation()
+      }) {
+        Image(systemName: geminiVM.isListeningForSpeech ? "mic.fill" : "mic.slash.fill")
+          .font(.system(size: 24))
+          .foregroundColor(geminiVM.isListeningForSpeech ? .green : .red)
+      }
 
       Button(action: sendMessage) {
         Image(systemName: "arrow.up.circle.fill")

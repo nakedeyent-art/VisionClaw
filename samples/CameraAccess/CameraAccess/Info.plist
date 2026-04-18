@@ -50,6 +50,16 @@
 		<true/>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>34.148.98.219</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+			</dict>
+		</dict>
 	</dict>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Needed to connect to Meta AI Glasses</string>
@@ -59,6 +69,9 @@
 	<string>This app uses the camera for iPhone testing mode, allowing you to test the AI assistant pipeline without glasses.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>This app needs to connect to the OpenClaw Agent HQ and WebRTC server running on your local Mac.</string>
+        <key>NSSpeechRecognitionUsageDescription</key>
+        <string>This app uses on-device speech recognition to accurately convert your voice into text commands for the AI.</string>
+
 	<key>NSMicrophoneUsageDescription</key>
 	<string>This app uses the microphone to have voice conversations with the AI assistant while streaming from your glasses.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

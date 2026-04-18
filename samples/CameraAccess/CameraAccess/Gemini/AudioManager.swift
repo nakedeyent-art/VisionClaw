@@ -1,11 +1,13 @@
 import AVFoundation
+import Speech
 import Foundation
 import UIKit
 
 class AudioManager {
   var onAudioCaptured: ((Data) -> Void)?
+  var onAudioBuffer: ((AVAudioPCMBuffer) -> Void)?
 
-  private let audioEngine = AVAudioEngine()
+  let audioEngine = AVAudioEngine()
   private let playerNode = AVAudioPlayerNode()
   private var isCapturing = false
   private var wasCapturingBeforeInterruption = false
@@ -142,6 +144,7 @@ class AudioManager {
     // Tap in NATIVE format (always works on all hardware), then manually convert
     inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputNativeFormat) { [weak self] buffer, _ in
       guard let self else { return }
+      self.onAudioBuffer?(buffer)
 
       tapCount += 1
       let pcmData = self.manualDownsampleToInt16(
@@ -514,5 +517,98 @@ class AudioManager {
     }
 
     return outputBuffer
+  }
+}
+
+// MARK: - Speech To Text Fallback
+@MainActor
+class SpeechToTextManager: ObservableObject {
+  @Published var isListening: Bool = false
+  @Published var finalTranscribedText: String = ""
+  @Published var partialTranscribedText: String = ""
+
+  private var speechRecognizer: SFSpeechRecognizer?
+  private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+  private var recognitionTask: SFSpeechRecognitionTask?
+  private var silenceTimer: Timer?
+  private var lastEngine: AVAudioEngine?
+
+  init() {
+    setupRecognizer()
+  }
+
+  private func setupRecognizer() {
+    speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+  }
+
+  func requestAuthorization(completion: @escaping (Bool) -> Void) {
+    SFSpeechRecognizer.requestAuthorization { status in
+      DispatchQueue.main.async {
+        completion(status == .authorized)
+      }
+    }
+  }
+
+  func startProcessing(from engine: AVAudioEngine) throws {
+    guard let recognizer = speechRecognizer, recognizer.isAvailable else {
+      throw NSError(domain: "SpeechToText", code: 1, userInfo: [NSLocalizedDescriptionKey: "Speech recognizer not available."])
+    }
+
+    self.lastEngine = engine
+    cancelProcessing()
+    let request = SFSpeechAudioBufferRecognitionRequest()
+    request.shouldReportPartialResults = true
+    self.recognitionRequest = request
+
+    recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
+      guard let self = self else { return }
+      Task { @MainActor in
+        if let result = result {
+          let text = result.bestTranscription.formattedString
+          self.partialTranscribedText = text
+          
+          self.silenceTimer?.invalidate()
+          self.silenceTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { _ in
+             Task { @MainActor [weak self] in
+                 guard let self = self else { return }
+                 let finalText = self.partialTranscribedText
+                 self.partialTranscribedText = ""
+                 if !finalText.isEmpty {
+                     self.finalTranscribedText = finalText
+                 }
+                 // Restart the tap to cleanly bypass Apple's 60-second limit
+                 if let engine = self.lastEngine {
+                     self.cancelProcessing()
+                     try? self.startProcessing(from: engine)
+                 }
+             }
+          }
+          
+          if result.isFinal {
+            self.finalTranscribedText = text
+            self.partialTranscribedText = ""
+          }
+        }
+        if error != nil {
+          self.cancelProcessing()
+        }
+      }
+    }
+
+    self.isListening = true
+  }
+
+  func processBuffer(_ buffer: AVAudioPCMBuffer) {
+    self.recognitionRequest?.append(buffer)
+  }
+
+  func cancelProcessing() {
+    silenceTimer?.invalidate()
+    silenceTimer = nil
+    recognitionTask?.cancel()
+    recognitionTask = nil
+    recognitionRequest?.endAudio()
+    recognitionRequest = nil
+    isListening = false
   }
 }

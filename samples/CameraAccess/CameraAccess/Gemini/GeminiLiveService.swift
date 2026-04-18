@@ -210,8 +210,7 @@ class GeminiLiveService: ObservableObject {
               "prebuiltVoiceConfig": [
                 "voiceName": "Puck"
               ]
-            ],
-            "languageCode": "en-US"
+            ]
           ]
         ],
         "systemInstruction": [
@@ -220,6 +219,9 @@ class GeminiLiveService: ObservableObject {
           ]
         ],
         "tools": [
+          [
+            "googleSearch": [:] as [String: Any]
+          ],
           [
             "functionDeclarations": ToolDeclarations.allDeclarations()
           ]

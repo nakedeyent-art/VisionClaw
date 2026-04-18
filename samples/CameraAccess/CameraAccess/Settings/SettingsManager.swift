@@ -23,7 +23,12 @@ final class SettingsManager {
   // MARK: - Gemini
 
   var geminiAPIKey: String {
-    get { defaults.string(forKey: Key.geminiAPIKey.rawValue) ?? Secrets.geminiAPIKey }
+    get {
+      let stored = defaults.string(forKey: Key.geminiAPIKey.rawValue) ?? ""
+      return stored.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        ? Secrets.geminiAPIKey
+        : stored
+    }
     set { defaults.set(newValue, forKey: Key.geminiAPIKey.rawValue) }
   }
 
@@ -35,7 +40,17 @@ final class SettingsManager {
   // MARK: - OpenClaw
 
   var openClawHost: String {
-    get { defaults.string(forKey: Key.openClawHost.rawValue) ?? Secrets.openClawHost }
+    get {
+      let stored = defaults.string(forKey: Key.openClawHost.rawValue) ?? ""
+      var host = stored.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        ? Secrets.openClawHost
+        : stored
+      if !host.hasPrefix("http://") && !host.hasPrefix("https://") {
+        host = "http://" + host
+      }
+      while host.hasSuffix("/") { host.removeLast() }
+      return host
+    }
     set { defaults.set(newValue, forKey: Key.openClawHost.rawValue) }
   }
 
@@ -48,12 +63,22 @@ final class SettingsManager {
   }
 
   var openClawHookToken: String {
-    get { defaults.string(forKey: Key.openClawHookToken.rawValue) ?? Secrets.openClawHookToken }
+    get {
+      let stored = defaults.string(forKey: Key.openClawHookToken.rawValue) ?? ""
+      return stored.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        ? Secrets.openClawHookToken
+        : stored
+    }
     set { defaults.set(newValue, forKey: Key.openClawHookToken.rawValue) }
   }
 
   var openClawGatewayToken: String {
-    get { defaults.string(forKey: Key.openClawGatewayToken.rawValue) ?? Secrets.openClawGatewayToken }
+    get {
+      let stored = defaults.string(forKey: Key.openClawGatewayToken.rawValue) ?? ""
+      return stored.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        ? Secrets.openClawGatewayToken
+        : stored
+    }
     set { defaults.set(newValue, forKey: Key.openClawGatewayToken.rawValue) }
   }
 
